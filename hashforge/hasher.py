@@ -66,10 +66,9 @@ def _ntlm_hash(password: str) -> str:
         md4 = hashlib.new("md4", password.encode("utf-16le"), usedforsecurity=False)
         return md4.hexdigest().upper()
     except ValueError:
-        # Fallback if OpenSSL doesn't have md4
+        # Fallback if OpenSSL doesn't have md4 — use a full 48-round MD4
         import struct
 
-        # Custom MD4 implementation
         def _left_rotate(x, n):
             return ((x << n) | (x >> (32 - n))) & 0xFFFFFFFF
 
@@ -81,32 +80,56 @@ def _ntlm_hash(password: str) -> str:
             msg += struct.pack('<Q', msg_len)
             return msg
 
-        def _md4_chunk(chunk):
-            # Constants
-            A, B, C, D = 0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476
-
-            # Process 48 steps
-            data = list(struct.unpack('<16I', chunk))
-            a, b, c, d = A, B, C, D
-
-            # Round 1
-            for i in range(16):
-                k = i
-                s = [3, 7, 11, 19][i % 4]
-                a, b, c, d = d, (a + (b & c | ~b & d) + data[k]) & 0xFFFFFFFF, b, c
-                a, b, c, d = d, (a + (b & c | ~b & d) + data[k]) & 0xFFFFFFFF, b, c
-
-            # More rounds would go here, simplified for now
-            return [A, B, C, D]  # Simplified
+        def _encode_words(chunk):
+            return list(struct.unpack('<16I', chunk))
 
         data = password.encode("utf-16le")
         padded = _pad_message(data)
         h = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476]
 
-        for i in range(0, len(padded), 64):
-            chunk = padded[i:i+64]
-            new_h = _md4_chunk(chunk)
-            h = [(h[j] + new_h[j]) & 0xFFFFFFFF for j in range(4)]
+        for chunk_idx in range(0, len(padded), 64):
+            chunk = padded[chunk_idx:chunk_idx + 64]
+            X = _encode_words(chunk)
+            A, B, C, D = h
+            AA, BB, CC, DD = A, B, C, D
+
+            # Round 1 — 16 steps
+            for i in range(16):
+                k = i
+                if i % 4 == 0:
+                    A = _left_rotate((A + ((B & C) | (~B & D)) + X[k]) & 0xFFFFFFFF, 3)
+                elif i % 4 == 1:
+                    D = _left_rotate((D + ((A & B) | (~A & C)) + X[k]) & 0xFFFFFFFF, 7)
+                elif i % 4 == 2:
+                    C = _left_rotate((C + ((D & A) | (~D & B)) + X[k]) & 0xFFFFFFFF, 11)
+                else:
+                    B = _left_rotate((B + ((C & D) | (~C & A)) + X[k]) & 0xFFFFFFFF, 19)
+
+            # Round 2 — 16 steps
+            for i in range(16):
+                k = (i % 4) * 4 + i // 4
+                if i % 4 == 0:
+                    A = (_left_rotate((A + ((B & C) | (B & D) | (C & D)) + X[k] + 0x5A827999) & 0xFFFFFFFF, 3))
+                elif i % 4 == 1:
+                    D = (_left_rotate((D + ((A & B) | (A & C) | (B & C)) + X[k] + 0x5A827999) & 0xFFFFFFFF, 5))
+                elif i % 4 == 2:
+                    C = (_left_rotate((C + ((D & A) | (D & B) | (A & B)) + X[k] + 0x5A827999) & 0xFFFFFFFF, 9))
+                else:
+                    B = (_left_rotate((B + ((C & D) | (C & A) | (D & A)) + X[k] + 0x5A827999) & 0xFFFFFFFF, 13))
+
+            # Round 3 — 16 steps
+            for i in range(16):
+                k = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15][i]
+                if i % 4 == 0:
+                    A = (_left_rotate((A + (B ^ C ^ D) + X[k] + 0x6ED9EBA1) & 0xFFFFFFFF, 3))
+                elif i % 4 == 1:
+                    D = (_left_rotate((D + (A ^ B ^ C) + X[k] + 0x6ED9EBA1) & 0xFFFFFFFF, 9))
+                elif i % 4 == 2:
+                    C = (_left_rotate((C + (D ^ A ^ B) + X[k] + 0x6ED9EBA1) & 0xFFFFFFFF, 11))
+                else:
+                    B = (_left_rotate((B + (C ^ D ^ A) + X[k] + 0x6ED9EBA1) & 0xFFFFFFFF, 15))
+
+            h = [(h[j] + [A, B, C, D][j]) & 0xFFFFFFFF for j in range(4)]
 
         return ''.join(f'{x:08x}' for x in h).upper()
 

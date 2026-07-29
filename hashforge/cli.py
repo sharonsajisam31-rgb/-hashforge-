@@ -88,6 +88,8 @@ Examples:
                               help="Number of worker processes (default: CPU count)")
     crack_parser.add_argument("--gpu", action="store_true",
                               help="Use GPU acceleration (for MD5/SHA-256)")
+    crack_parser.add_argument("--output", "-o", default="",
+                              help="Save results to file (results.txt)")
 
     # --- analyze ---
     analyze_parser = subparsers.add_parser("analyze", help="Analyze password strength")
@@ -204,69 +206,67 @@ def cmd_crack(args: argparse.Namespace):
         print(c(f"[!] Error reading wordlist: {e}", Colors.RED))
         sys.exit(1)
 
-    # Run crack
-    if use_gpu and hash_type in ("md5", "sha256"):
-        from .gpu_accel import GPUCracker
-        gpu_cracker = GPUCracker(batch_size=10000)
-        if gpu_cracker.available:
-            # Read all words
-            all_words = []
-            with open(wordlist, "r", encoding="utf-8", errors="ignore") as f:
-                all_words = [line.strip() for line in f if line.strip()]
+    # Run crack (with Ctrl+C handling)
+    result_attr = None
+    try:
+        if use_gpu:
+            from .gpu_accel import GPUCracker
+            gpu_cracker = GPUCracker(batch_size=10000)
+            if gpu_cracker.available:
+                # Read all words
+                all_words = []
+                with open(wordlist, "r", encoding="utf-8", errors="ignore") as f:
+                    all_words = [line.strip() for line in f if line.strip()]
 
-            print(c(f"  GPU Cracking {len(all_words):,} words via {gpu_cracker.device_name}...", Colors.YELLOW))
+                print(c(f"  GPU Cracking {len(all_words):,} words via {gpu_cracker.device_name}...", Colors.YELLOW))
 
-            from .rules import WordRuleEngine
-            engine = WordRuleEngine(max_mutations=50000) if use_rules else None
+                from .rules import WordRuleEngine
+                engine = WordRuleEngine(max_mutations=50000) if use_rules else None
 
-            start = time.time()
-            found, password, attempts = gpu_cracker.crack_batch(
-                all_words, hash_value, hash_type, use_rules_engine=engine
+                start = time.time()
+                found, password, attempts = gpu_cracker.crack_batch(
+                    all_words, hash_value, hash_type, use_rules_engine=engine
+                )
+                elapsed = time.time() - start
+
+                # Build result
+                if found:
+                    result_attr = {"found": True, "password": password,
+                                   "attempts": attempts, "time_taken": round(elapsed, 2),
+                                   "rule_used": "GPU direct match" if password in all_words else "GPU + rules"}
+                else:
+                    result_attr = {"found": False, "password": "",
+                                   "attempts": attempts, "time_taken": round(elapsed, 2),
+                                   "rule_used": ""}
+            else:
+                print(c("  GPU not available, falling back to CPU...", Colors.YELLOW))
+
+        if result_attr is None:
+            # CPU fallback
+            cracker = HashCracker(workers=workers)
+            print(c("  Cracking...", Colors.YELLOW))
+
+            result = cracker.crack_dictionary(
+                hash_value=hash_value,
+                hash_type=hash_type,
+                wordlist_path=wordlist,
+                use_rules=use_rules,
+                verbose=True,
             )
-            elapsed = time.time() - start
+            result_attr = {
+                "found": result.found,
+                "password": result.password,
+                "attempts": result.attempts,
+                "time_taken": result.time_taken,
+                "rule_used": result.rule_used,
+            }
 
-            # Build result
-            if found:
-                result_attr = {"found": True, "password": password,
-                               "attempts": attempts, "time_taken": round(elapsed, 2),
-                               "rule_used": "GPU direct match" if password in all_words else "GPU + rules"}
-            else:
-                result_attr = {"found": False, "password": "",
-                               "attempts": attempts, "time_taken": round(elapsed, 2),
-                               "rule_used": ""}
-
-            print()
-            print(c("+------------------------------------------------+", Colors.CYAN))
-            print(c("  RESULTS [GPU]", Colors.BOLD))
-            print(c("+------------------------------------------------+", Colors.CYAN))
-
-            if result_attr["found"]:
-                print(c(f"  [FOUND] PASSWORD FOUND!", Colors.GREEN + Colors.BOLD))
-                print(f"     Password: {c(result_attr['password'], Colors.GREEN + Colors.BOLD)}")
-                print(f"     Method:   {result_attr['rule_used']}")
-            else:
-                print(c(f"  [MISS] Password not found", Colors.RED))
-                print(f"     Try a larger wordlist or enable rules.")
-
-            print(f"  Attempts: {result_attr['attempts']:,}")
-            print(f"  Time:     {result_attr['time_taken']:.2f}s")
-            if result_attr['time_taken'] > 0:
-                rate = result_attr['attempts'] / result_attr['time_taken']
-                print(f"  Rate:     {rate:,.0f} hashes/sec")
-            print()
-            return
-
-    # Fallback to CPU cracker
-    cracker = HashCracker(workers=workers)
-    print(c("  Cracking...", Colors.YELLOW))
-
-    result = cracker.crack_dictionary(
-        hash_value=hash_value,
-        hash_type=hash_type,
-        wordlist_path=wordlist,
-        use_rules=use_rules,
-        verbose=True,
-    )
+    except KeyboardInterrupt:
+        print()
+        print(c("\n[!] Cracking interrupted by user (Ctrl+C)", Colors.YELLOW))
+        if result_attr is None:
+            result_attr = {"found": False, "password": "", "attempts": 0, "time_taken": 0, "rule_used": ""}
+        print()
 
     # Show results
     print()
@@ -274,25 +274,48 @@ def cmd_crack(args: argparse.Namespace):
     print(c("  RESULTS", Colors.BOLD))
     print(c("+------------------------------------------------+", Colors.CYAN))
 
-    if result.found:
+    if result_attr["found"]:
         print(c(f"  [FOUND] PASSWORD FOUND!", Colors.GREEN + Colors.BOLD))
-        print(f"     Password: {c(result.password, Colors.GREEN + Colors.BOLD)}")
-        print(f"     Method:   {result.rule_used}")
+        print(f"     Password: {c(result_attr['password'], Colors.GREEN + Colors.BOLD)}")
+        print(f"     Method:   {result_attr['rule_used']}")
     else:
         print(c(f"  [MISS] Password not found", Colors.RED))
         print(f"     Try a larger wordlist or enable rules.")
 
-    print(f"  Attempts: {result.attempts:,}")
-    print(f"  Time:     {result.time_taken:.2f}s")
-    if result.time_taken > 0:
-        rate = result.attempts / result.time_taken
+    print(f"  Attempts: {result_attr['attempts']:,}")
+    print(f"  Time:     {result_attr['time_taken']:.2f}s")
+    if result_attr['time_taken'] > 0:
+        rate = result_attr['attempts'] / result_attr['time_taken']
         print(f"  Rate:     {rate:,.0f} hashes/sec")
     print()
+
+    # Save to output file if requested
+    if args.output:
+        try:
+            output_path = args.output
+            with open(output_path, "w") as f:
+                f.write("HashForge Crack Results\n")
+                f.write("=" * 40 + "\n")
+                f.write(f"Target Hash: {hash_value}\n")
+                f.write(f"Hash Type:   {hash_type}\n")
+                f.write(f"Wordlist:    {wordlist}\n")
+                f.write(f"Rules:       {'Enabled' if use_rules else 'Disabled'}\n")
+                f.write(f"Found:       {result_attr['found']}\n")
+                if result_attr['found']:
+                    f.write(f"Password:    {result_attr['password']}\n")
+                    f.write(f"Method:      {result_attr['rule_used']}\n")
+                f.write(f"Attempts:    {result_attr['attempts']:,}\n")
+                f.write(f"Time:        {result_attr['time_taken']:.2f}s\n")
+            print(c(f"  [OK] Results saved to: {output_path}", Colors.GREEN))
+            print()
+        except Exception as e:
+            print(c(f"[!] Could not save results: {e}", Colors.RED))
+            print()
 
 
 def cmd_analyze(args: argparse.Namespace):
     """Analyze password strength."""
-    from .analyzer import analyze_password
+    from .analyzer import analyze_password, CRACK_TIME_DISCLAIMER
 
     password = args.password
     report = analyze_password(password)
@@ -316,6 +339,7 @@ def cmd_analyze(args: argparse.Namespace):
     print(f"  {c('Length:', Colors.BOLD):16s} {report.length}")
     print(f"  {c('Entropy:', Colors.BOLD):16s} {report.entropy_bits:.1f} bits")
     print(f"  {c('Crack Time:', Colors.BOLD):16s} {c(report.estimated_crack_time, Colors.YELLOW)} (SHA-256)")
+    print(c(f"  {CRACK_TIME_DISCLAIMER}", Colors.DIM))
     print()
 
     # Character sets

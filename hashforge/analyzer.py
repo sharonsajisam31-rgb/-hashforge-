@@ -38,19 +38,31 @@ class PasswordReport:
 # ---------------------------------------------------------------------------
 
 COMMON_PASSWORDS = {
+    # Top 30 most common (rockyou)
     "123456", "password", "12345678", "qwerty", "123456789",
     "12345", "1234", "111111", "1234567", "sunshine",
     "qwerty123", "000000", "admin", "letmein", "welcome",
     "monkey", "dragon", "master", "football", "charlie",
     "trustno1", "passw0rd", "shadow", "michael", "superman",
     "123123", "ashley", "qwerty12345", "password1", "123qwe",
+    # 31-60
     "batman", "starwars", "iloveyou", "princess", "696969",
     "abc123", "password123", "123qweasd", "qwertyuiop", "pass123",
     "1q2w3e4r", "qwerty1", "123456a", "zaq1zaq1", "test123",
     "pass", "passwd", "qwerty123456", "qwerty123", "admin123",
     "letmein123", "welcome123", "football1", "baseball", "hockey",
     "summer2024", "winter2024", "spring2024", "autumn2024",
-    "Password", "Password1", "Password123", "P@ssw0rd", "P@$$w0rd",
+    "Password", "Password1",
+    # 61-100 — expanding to a full top 100
+    "Password123", "P@ssw0rd", "P@$$w0rd",
+    "hello123", "fuckyou", "whatever", "nicole", "daniel",
+    "andrew", "joshua", "matthew", "anthony", "jennifer",
+    "michelle", "stephanie", "jessica", "amanda", "melissa",
+    "alexander", "william", "jonathan", "nicholas", "katherine",
+    "sexy123", "blink182", "soccer1", "pokemon", "thomas",
+    "george", "robert", "steven", "richard", "joseph",
+    "harry", "ronald", "edward", "brian", "kevin",
+    "jason", "justin", "brandon", "ryan", "tyler",
 }
 
 # Common patterns to detect
@@ -95,6 +107,14 @@ HASH_RATES = {
     "bcrypt":             1_000_000,   # 1 MH/s
     "unknown":          50_000_000,    # Conservative default
 }
+
+# Disclaimer: These crack-time estimates assume attacker has a top-tier GPU (RTX 4090).
+# HashForge runs on CPU. Actual times in HashForge will be 1,000-10,000x slower.
+CRACK_TIME_DISCLAIMER = (
+    "Note: Crack-time estimates assume an attacker with an RTX 4090 GPU. "
+    "HashForge runs on CPU, so actual HashForge times will be 1,000-10,000x longer. "
+    "These estimates are for real-world security comparison only."
+)
 
 # Brute-force key space for character sets
 CHARSET_SIZES = {

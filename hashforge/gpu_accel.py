@@ -487,12 +487,9 @@ class GPUCracker:
                     target.astype(np.uint32),
                     n_words,
                 )
-            elif hash_type == "sha256":
-                _cuda_sha256_kernel[blocks_per_grid, threads_per_block](
-                    d_words, d_lengths, d_results,
-                    target.astype(np.uint32),
-                    n_words,
-                )
+            else:
+                # SHA-256, NTLM, etc. route through CPU fallback
+                raise NotImplementedError(f"GPU kernel not implemented for {hash_type}")
 
             cuda.synchronize()
         except Exception:

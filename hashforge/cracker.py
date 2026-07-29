@@ -8,8 +8,7 @@ word mutations for increased coverage.
 import time
 import multiprocessing
 from dataclasses import dataclass
-from typing import Optional, Set, List, Callable
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Optional, Set, List
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +60,6 @@ class HashCracker:
         wordlist_path: str,
         use_rules: bool = True,
         verbose: bool = False,
-        progress_callback: Optional[Callable] = None,
     ) -> CrackResult:
         """Crack a hash using a dictionary wordlist.
 
@@ -71,7 +69,6 @@ class HashCracker:
             wordlist_path: Path to wordlist file (one word per line).
             use_rules: If True, apply mutation rules to each word.
             verbose: If True, print progress.
-            progress_callback: Optional callback for progress updates.
 
         Returns:
             CrackResult with findings.
