@@ -1,0 +1,438 @@
+"""
+CLI module for HashForge.
+
+Provides command-line interface with commands:
+  crack    - Crack a hash using dictionary + rules
+  analyze  - Analyze password strength
+  rules    - Show word mutations
+  verify   - Verify password against a hash
+  hash     - Compute hash of text
+  list     - List supported hash types
+"""
+
+import argparse
+import sys
+import os
+import time
+from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# ANSI colors
+# ---------------------------------------------------------------------------
+
+class Colors:
+    BLUE = "\033[94m"
+    CYAN = "\033[96m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+    MAGENTA = "\033[95m"
+
+
+def _supports_color() -> bool:
+    if os.name == "nt":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            return kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7) != 0
+        except Exception:
+            return False
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+
+USE_COLOR = _supports_color()
+
+
+def c(text: str, color: str) -> str:
+    if USE_COLOR:
+        return f"{color}{text}{Colors.RESET}"
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Argument parser
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="hashforge",
+        description="HashForge - Hash cracking toolkit with rule engine and password analysis",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  hashforge crack --hash \"5d41402abc4b2a76b9719d911017c592\" --wordlist rockyou.txt
+  hashforge crack --hash \"...\" --wordlist words.txt --type sha256 --no-rules
+  hashforge analyze --password \"MyP@ssw0rd2024!\"
+  hashforge rules --word \"password\" --show 20
+  hashforge hash --text \"Hello World\" --type md5
+  hashforge verify --hash \"...\" --password \"mypass\" --type md5
+  hashforge list
+        """,
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+
+    # --- crack ---
+    crack_parser = subparsers.add_parser("crack", help="Crack a hash using dictionary attack")
+    crack_parser.add_argument("--hash", "-H", required=True, help="Target hash value")
+    crack_parser.add_argument("--wordlist", "-w", required=True, help="Path to wordlist file")
+    crack_parser.add_argument("--type", "-t", dest="hash_type", default="",
+                              help="Hash type (auto-detected if omitted)")
+    crack_parser.add_argument("--no-rules", action="store_true",
+                              help="Disable rule-based mutations")
+    crack_parser.add_argument("--workers", type=int, default=0,
+                              help="Number of worker processes (default: CPU count)")
+
+    # --- analyze ---
+    analyze_parser = subparsers.add_parser("analyze", help="Analyze password strength")
+    analyze_parser.add_argument("--password", "-p", required=True, help="Password to analyze")
+
+    # --- rules ---
+    rules_parser = subparsers.add_parser("rules", help="Show word mutations from rules")
+    rules_parser.add_argument("--word", "-w", required=True, help="Base word to mutate")
+    rules_parser.add_argument("--show", type=int, default=20,
+                              help="Number of mutations to show (default: 20)")
+    rules_parser.add_argument("--rule", default="all",
+                              choices=["caps", "leet", "suffix", "prefix",
+                                       "reverse", "truncate", "double", "all"],
+                              help="Rule to apply (default: all)")
+
+    # --- verify ---
+    verify_parser = subparsers.add_parser("verify", help="Verify password against a hash")
+    verify_parser.add_argument("--hash", "-H", required=True, help="Hash to compare against")
+    verify_parser.add_argument("--password", "-p", required=True, help="Password to verify")
+    verify_parser.add_argument("--type", "-t", dest="hash_type", default="",
+                               help="Hash type (auto-detected if omitted)")
+
+    # --- hash ---
+    hash_parser = subparsers.add_parser("hash", help="Compute hash of text")
+    hash_parser.add_argument("--text", "-t", required=True, help="Text to hash")
+    hash_parser.add_argument("--type", "-d", default="md5",
+                             choices=["md5", "sha1", "sha224", "sha256", "sha384",
+                                      "sha512", "sha3_224", "sha3_256", "sha3_384",
+                                      "sha3_512", "ntlm"],
+                             help="Hash algorithm (default: md5)")
+
+    # --- list ---
+    subparsers.add_parser("list", help="List supported hash types")
+
+    return parser
+
+
+# ---------------------------------------------------------------------------
+# Command handlers
+# ---------------------------------------------------------------------------
+
+def cmd_crack(args: argparse.Namespace):
+    """Crack a hash using dictionary attack."""
+    from .cracker import HashCracker
+    from .hasher import identify_hash_type
+
+    hash_value = args.hash.strip()
+    hash_type = args.hash_type if args.hash_type else identify_hash_type(hash_value)
+    wordlist = args.wordlist
+    use_rules = not args.no_rules
+    workers = args.workers if args.workers > 0 else None
+
+    # Validate wordlist
+    if not os.path.isfile(wordlist):
+        print(c(f"[!] Wordlist not found: {wordlist}", Colors.RED))
+        sys.exit(1)
+
+    # Show crack header
+    print()
+    print(c("+================================================+", Colors.MAGENTA))
+    print(c(f"|  HASHFORGE CRACKER                                     |", Colors.MAGENTA))
+    print(c("+================================================+", Colors.MAGENTA))
+    print()
+    print(f"  Target:   {c(hash_value[:48] + ('...' if len(hash_value) > 48 else ''), Colors.YELLOW)}")
+    print(f"  Type:     {c(hash_type or 'Unknown', Colors.CYAN)}")
+    print(f"  Wordlist: {c(os.path.relpath(wordlist), Colors.DIM)}")
+    print(f"  Rules:    {c('Enabled' if use_rules else 'Disabled', Colors.GREEN if use_rules else Colors.RED)}")
+    print(f"  Workers:  {c(str(workers or os.cpu_count()), Colors.BLUE)}")
+    print()
+
+    if not hash_type:
+        print(c("[!] Could not identify hash type. Use --type to specify.", Colors.RED))
+        print(c(f"    Supported types: md5, sha1, sha256, sha512, ntlm, bcrypt, ...", Colors.YELLOW))
+        sys.exit(1)
+
+    # Count wordlist
+    try:
+        with open(wordlist, "r", encoding="utf-8", errors="ignore") as f:
+            total = sum(1 for _ in f)
+        print(f"  Dictionary: {c(f'{total:,}', Colors.BOLD)} words")
+        if use_rules:
+            print(f"  (with rules, each word may generate 50-500+ mutations)")
+        print()
+    except Exception as e:
+        print(c(f"[!] Error reading wordlist: {e}", Colors.RED))
+        sys.exit(1)
+
+    # Run crack
+    cracker = HashCracker(workers=workers)
+    print(c("  Cracking...", Colors.YELLOW))
+
+    result = cracker.crack_dictionary(
+        hash_value=hash_value,
+        hash_type=hash_type,
+        wordlist_path=wordlist,
+        use_rules=use_rules,
+        verbose=True,
+    )
+
+    # Show results
+    print()
+    print(c("+------------------------------------------------+", Colors.CYAN))
+    print(c("  RESULTS", Colors.BOLD))
+    print(c("+------------------------------------------------+", Colors.CYAN))
+
+    if result.found:
+        print(c(f"  ✅ PASSWORD FOUND!", Colors.GREEN + Colors.BOLD))
+        print(f"     Password: {c(result.password, Colors.GREEN + Colors.BOLD)}")
+        print(f"     Method:   {result.rule_used}")
+    else:
+        print(c(f"  ❌ Password not found", Colors.RED))
+        print(f"     Try a larger wordlist or enable rules.")
+
+    print(f"  Attempts: {result.attempts:,}")
+    print(f"  Time:     {result.time_taken:.2f}s")
+    if result.time_taken > 0:
+        rate = result.attempts / result.time_taken
+        print(f"  Rate:     {rate:,.0f} hashes/sec")
+    print()
+
+
+def cmd_analyze(args: argparse.Namespace):
+    """Analyze password strength."""
+    from .analyzer import analyze_password
+
+    password = args.password
+    report = analyze_password(password)
+
+    print()
+    print(c("+================================================+", Colors.CYAN))
+    print(c("|  PASSWORD STRENGTH ANALYSIS                              |", Colors.CYAN))
+    print(c("+================================================+", Colors.CYAN))
+    print()
+
+    # Strength score with visual bar
+    score_color = Colors.GREEN if report.score >= 60 else (Colors.YELLOW if report.score >= 40 else Colors.RED)
+    bar_len = 20
+    filled = int(report.score / 100 * bar_len)
+    bar = "█" * filled + "░" * (bar_len - filled)
+    print(f"  Score:      {c(f'{report.score}/100', score_color + Colors.BOLD)} {c(bar, score_color)}")
+    print(f"  Strength:   {c(report.strength_label, score_color + Colors.BOLD)}")
+    print()
+
+    # Basic info
+    print(f"  {c('Length:', Colors.BOLD):16s} {report.length}")
+    print(f"  {c('Entropy:', Colors.BOLD):16s} {report.entropy_bits:.1f} bits")
+    print(f"  {c('Crack Time:', Colors.BOLD):16s} {c(report.estimated_crack_time, Colors.YELLOW)} (SHA-256)")
+    print()
+
+    # Character sets
+    set_names = {
+        "lowercase": "a-z", "uppercase": "A-Z",
+        "digits": "0-9", "special": "!@#$%",
+        "space": "' '"
+    }
+    sets_str = ", ".join(set_names.get(s, s) for s in report.character_sets) or "None"
+    print(f"  {c('Character Sets:', Colors.BOLD)} {sets_str}")
+    print()
+
+    # Issues
+    if report.issues:
+        print(f"  {c('Issues:', Colors.RED + Colors.BOLD)}")
+        for issue in report.issues:
+            print(f"    {c('!', Colors.RED)} {issue}")
+        print()
+
+    # Suggestions
+    if report.suggestions:
+        print(f"  {c('Suggestions:', Colors.YELLOW + Colors.BOLD)}")
+        for suggestion in report.suggestions[:5]:
+            print(f"    {c('>', Colors.YELLOW)} {suggestion}")
+        print()
+
+
+def cmd_rules(args: argparse.Namespace):
+    """Show word mutations from rules."""
+    from .rules import generate_mutations, describe_rules
+
+    word = args.word
+    show_count = args.show
+    rule = args.rule
+
+    rules_desc = describe_rules()
+
+    print()
+    print(c("+================================================+", Colors.MAGENTA))
+    print(c("|  RULE ENGINE - Word Mutations                              |", Colors.MAGENTA))
+    print(c("+================================================+", Colors.MAGENTA))
+    print()
+
+    print(f"  Base word: {c(word, Colors.BOLD + Colors.YELLOW)}")
+    print(f"  Rule:      {c(rule, Colors.CYAN)} - {rules_desc.get(rule, '')}")
+    print()
+
+    mutations = generate_mutations(word, rules=[rule] if rule != "all" else None)
+    total = len(mutations)
+
+    if total == 0:
+        print(c("  No mutations generated.", Colors.YELLOW))
+        return
+
+    print(f"  Generated {c(f'{total:,}', Colors.BOLD)} mutations")
+    print()
+
+    # Show sample
+    print(c(f"  Sample (first {min(show_count, total)}):", Colors.BOLD))
+    for i, mutation in enumerate(mutations[:show_count], 1):
+        marker = "→" if mutation != word else " "
+        print(f"    {marker} {mutation}")
+    print()
+
+    if total > show_count:
+        print(c(f"  ... and {total - show_count} more", Colors.DIM))
+        print()
+
+
+def cmd_verify(args: argparse.Namespace):
+    """Verify password against a hash."""
+    from .hasher import verify_hash, identify_hash_type
+
+    hash_value = args.hash.strip()
+    password = args.password
+    hash_type = args.hash_type if args.hash_type else identify_hash_type(hash_value)
+
+    if not hash_type:
+        print(c("[!] Could not identify hash type. Use --type to specify.", Colors.RED))
+        sys.exit(1)
+
+    print()
+    print(c("+================================================+", Colors.CYAN))
+    print(c("|  HASH VERIFICATION                                      |", Colors.CYAN))
+    print(c("+================================================+", Colors.CYAN))
+    print()
+
+    print(f"  {c('Hash:', Colors.BOLD):12s} {hash_value[:48]}{'...' if len(hash_value) > 48 else ''}")
+    print(f"  {c('Type:', Colors.BOLD):12s} {hash_type}")
+    print(f"  {c('Password:', Colors.BOLD):12s} {password}")
+    print()
+
+    result = verify_hash(password, hash_value, hash_type)
+
+    if result:
+        print(c("  ✅ MATCH! Password is correct.", Colors.GREEN + Colors.BOLD))
+    else:
+        print(c("  ❌ No match. Password is incorrect.", Colors.RED))
+
+    print()
+
+
+def cmd_hash(args: argparse.Namespace):
+    """Compute hash of text."""
+    from .hasher import compute_hash
+
+    text = args.text
+    hash_type = args.type
+
+    result = compute_hash(text, hash_type)
+
+    print()
+    print(c("+================================================+", Colors.CYAN))
+    print(c("|  HASH COMPUTATION                                        |", Colors.CYAN))
+    print(c("+================================================+", Colors.CYAN))
+    print()
+
+    print(f"  {c('Algorithm:', Colors.BOLD):12s} {result.hash_type.upper()}")
+    print(f"  {c('Input:', Colors.BOLD):12s} {text[:60]}{'...' if len(text) > 60 else ''}")
+    print()
+
+    if result.success:
+        print(c(f"  {result.hash_type.upper()} Hash:", Colors.BOLD))
+        print(f"  {c(result.hash_value, Colors.GREEN)}")
+    else:
+        print(c(f"  Error: {result.message}", Colors.RED))
+
+    print()
+
+
+def cmd_list():
+    """List supported hash types."""
+    from .hasher import list_hash_types
+
+    hash_types = list_hash_types()
+
+    print()
+    print(c("+================================================+", Colors.CYAN))
+    print(c("|  SUPPORTED HASH TYPES                                    |", Colors.CYAN))
+    print(c("+================================================+", Colors.CYAN))
+    print()
+
+    print(f"  {c('Type', <12)} {'Hex Length':12} {'Name':20}")
+    print(f"  " + "-" * 44)
+    for htype in hash_types:
+        from .hasher import HASH_INFO
+        info = HASH_INFO.get(htype)
+        if info:
+            length = info["length"]
+            name = info["name"]
+        elif htype == "bcrypt":
+            length = 60
+            name = "bcrypt"
+        else:
+            length = "-"
+            name = htype.upper()
+        print(f"  {c(htype, <12)} {str(length):12} {name:20}")
+
+    print()
+    print(c("  Tip: hash type is auto-detected by length for hex hashes.", Colors.DIM))
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+
+def run_command(args: argparse.Namespace):
+    """Dispatch to the appropriate command handler."""
+    if args.command == "crack":
+        cmd_crack(args)
+    elif args.command == "analyze":
+        cmd_analyze(args)
+    elif args.command == "rules":
+        cmd_rules(args)
+    elif args.command == "verify":
+        cmd_verify(args)
+    elif args.command == "hash":
+        cmd_hash(args)
+    elif args.command == "list":
+        cmd_list()
+    else:
+        print(c("[!] No command specified. Use --help for usage.", Colors.YELLOW))
+        sys.exit(1)
+
+
+def main():
+    """Main entry point for HashForge CLI."""
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
+        print()
+        print(c("Tip: Use 'hashforge list' to see supported hash types.", Colors.YELLOW))
+        print(c("     Use 'hashforge crack --help' for cracking options.", Colors.YELLOW))
+        sys.exit(0)
+
+    run_command(args)
+
+
+if __name__ == "__main__":
+    main()
