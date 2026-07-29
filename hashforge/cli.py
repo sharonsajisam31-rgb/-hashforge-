@@ -194,11 +194,11 @@ def cmd_crack(args: argparse.Namespace):
     print(c("+------------------------------------------------+", Colors.CYAN))
 
     if result.found:
-        print(c(f"  ✅ PASSWORD FOUND!", Colors.GREEN + Colors.BOLD))
+        print(c(f"  [FOUND] PASSWORD FOUND!", Colors.GREEN + Colors.BOLD))
         print(f"     Password: {c(result.password, Colors.GREEN + Colors.BOLD)}")
         print(f"     Method:   {result.rule_used}")
     else:
-        print(c(f"  ❌ Password not found", Colors.RED))
+        print(c(f"  [MISS] Password not found", Colors.RED))
         print(f"     Try a larger wordlist or enable rules.")
 
     print(f"  Attempts: {result.attempts:,}")
@@ -226,7 +226,7 @@ def cmd_analyze(args: argparse.Namespace):
     score_color = Colors.GREEN if report.score >= 60 else (Colors.YELLOW if report.score >= 40 else Colors.RED)
     bar_len = 20
     filled = int(report.score / 100 * bar_len)
-    bar = "█" * filled + "░" * (bar_len - filled)
+    bar = "#" * filled + "-" * (bar_len - filled)
     print(f"  Score:      {c(f'{report.score}/100', score_color + Colors.BOLD)} {c(bar, score_color)}")
     print(f"  Strength:   {c(report.strength_label, score_color + Colors.BOLD)}")
     print()
@@ -295,7 +295,7 @@ def cmd_rules(args: argparse.Namespace):
     # Show sample
     print(c(f"  Sample (first {min(show_count, total)}):", Colors.BOLD))
     for i, mutation in enumerate(mutations[:show_count], 1):
-        marker = "→" if mutation != word else " "
+        marker = "->" if mutation != word else "  "
         print(f"    {marker} {mutation}")
     print()
 
@@ -330,9 +330,9 @@ def cmd_verify(args: argparse.Namespace):
     result = verify_hash(password, hash_value, hash_type)
 
     if result:
-        print(c("  ✅ MATCH! Password is correct.", Colors.GREEN + Colors.BOLD))
+        print(c("  [OK] MATCH! Password is correct.", Colors.GREEN + Colors.BOLD))
     else:
-        print(c("  ❌ No match. Password is incorrect.", Colors.RED))
+        print(c("  [NO] No match. Password is incorrect.", Colors.RED))
 
     print()
 
@@ -377,7 +377,7 @@ def cmd_list():
     print(c("+================================================+", Colors.CYAN))
     print()
 
-    print(f"  {c('Type', <12)} {'Hex Length':12} {'Name':20}")
+    print(f"  {'Type':<12} {'Hex Length':12} {'Name':20}")
     print(f"  " + "-" * 44)
     for htype in hash_types:
         from .hasher import HASH_INFO
@@ -391,7 +391,7 @@ def cmd_list():
         else:
             length = "-"
             name = htype.upper()
-        print(f"  {c(htype, <12)} {str(length):12} {name:20}")
+        print(f"  {c(htype, Colors.CYAN):<12} {str(length):>12} {name:>20}")
 
     print()
     print(c("  Tip: hash type is auto-detected by length for hex hashes.", Colors.DIM))
