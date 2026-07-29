@@ -1,3 +1,2 @@
 # HashForge dependencies
-# bcrypt is optional - for bcrypt hash support
-# bcrypt>=4.0.0
+bcrypt>=4.0.0

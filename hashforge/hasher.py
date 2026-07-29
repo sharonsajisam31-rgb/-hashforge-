@@ -41,6 +41,7 @@ HASH_INFO = {
     "sha3_384": {"name": "SHA3-384",  "length": 96, "hashlib": "sha3_384"},
     "sha3_512": {"name": "SHA3-512",  "length": 128, "hashlib": "sha3_512"},
     "ntlm":    {"name": "NTLM",       "length": 32, "hashlib": None},  # Special (MD4)
+    "bcrypt": {"name": "bcrypt", "length": 60, "hashlib": None},  # Special (needs salt)
 }
 
 # bcrypt hashes start with $2b$ or $2a$ and are 60 chars
@@ -110,13 +111,15 @@ def _ntlm_hash(password: str) -> str:
         return ''.join(f'{x:08x}' for x in h).upper()
 
 
-def compute_hash(text: str, hash_type: str) -> HashResult:
+def compute_hash(text: str, hash_type: str, rounds: int = 12) -> HashResult:
     """Compute a hash of the given text using the specified algorithm.
 
     Args:
         text: The text to hash.
         hash_type: One of: md5, sha1, sha224, sha256, sha384, sha512,
                   sha3_224, sha3_256, sha3_384, sha3_512, ntlm, bcrypt
+        rounds: Number of salt rounds for bcrypt (default: 12, range: 4-31).
+                Higher = slower but more secure.
 
     Returns:
         HashResult with the computed hash value.
@@ -127,10 +130,23 @@ def compute_hash(text: str, hash_type: str) -> HashResult:
 
     hash_type = hash_type.lower().replace("-", "_")
 
-    # bcrypt is special - needs salt
+    # bcrypt - generate salt and hash
     if hash_type == "bcrypt":
-        return HashResult(success=False, hash_type=hash_type,
-                          message="bcrypt requires a salt. Use bcrypt.hashpw() directly.")
+        try:
+            import bcrypt as _bcrypt
+            # Clamp rounds to valid range
+            rounds = max(4, min(31, rounds))
+            salt = _bcrypt.gensalt(rounds=rounds)
+            hashed = _bcrypt.hashpw(text.encode("utf-8"), salt)
+            return HashResult(success=True, hash_value=hashed.decode("utf-8"),
+                              hash_type=hash_type,
+                              message=f"Salt rounds: {rounds}")
+        except ImportError:
+            return HashResult(success=False, hash_type=hash_type,
+                              message="bcrypt package not installed. Run: pip install bcrypt")
+        except Exception as e:
+            return HashResult(success=False, hash_type=hash_type,
+                              message=f"bcrypt hash error: {e}")
 
     # NTLM is special
     if hash_type == "ntlm":
@@ -242,6 +258,4 @@ def identify_hash_type(hash_value: str) -> Optional[str]:
 
 def list_hash_types() -> list:
     """Return a list of supported hash type names."""
-    types = list(HASH_INFO.keys())
-    types.append("bcrypt")
-    return sorted(types)
+    return sorted(HASH_INFO.keys())

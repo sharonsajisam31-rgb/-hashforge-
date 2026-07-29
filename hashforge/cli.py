@@ -114,8 +114,10 @@ Examples:
     hash_parser.add_argument("--type", "-d", default="md5",
                              choices=["md5", "sha1", "sha224", "sha256", "sha384",
                                       "sha512", "sha3_224", "sha3_256", "sha3_384",
-                                      "sha3_512", "ntlm"],
+                                      "sha3_512", "ntlm", "bcrypt"],
                              help="Hash algorithm (default: md5)")
+    hash_parser.add_argument("--rounds", type=int, default=12,
+                             help="bcrypt salt rounds (default: 12, range: 4-31)")
 
     # --- list ---
     subparsers.add_parser("list", help="List supported hash types")
@@ -342,7 +344,7 @@ def cmd_hash(args: argparse.Namespace):
     text = args.text
     hash_type = args.type
 
-    result = compute_hash(text, hash_type)
+    result = compute_hash(text, hash_type, rounds=args.rounds)
 
     print()
     print(c("+================================================+", Colors.CYAN))

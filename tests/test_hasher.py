@@ -92,6 +92,42 @@ def test_unsupported_type():
     print("[PASS] Unsupported type")
 
 
+def test_bcrypt_compute():
+    """Test bcrypt hash computation."""
+    result = compute_hash("hello", "bcrypt")
+    assert result.success, f"bcrypt should succeed: {result.message}"
+    assert result.hash_value.startswith("$2b$") or result.hash_value.startswith("$2a$")
+    assert len(result.hash_value) == 60
+    print(f"[PASS] bcrypt compute ({result.hash_value[:30]}...)")
+
+
+def test_bcrypt_verify():
+    """Test bcrypt verification."""
+    result = compute_hash("mypassword", "bcrypt")
+    assert result.success
+    assert verify_hash("mypassword", result.hash_value, "bcrypt")
+    assert not verify_hash("wrongpassword", result.hash_value, "bcrypt")
+    print("[PASS] bcrypt verify")
+
+
+def test_bcrypt_auto_detect():
+    """Test bcrypt hash auto-detection."""
+    result = compute_hash("test", "bcrypt")
+    assert result.success
+    detected = identify_hash_type(result.hash_value)
+    assert detected == "bcrypt", f"Expected bcrypt, got {detected}"
+    print("[PASS] bcrypt auto-detect")
+
+
+def test_bcrypt_different_salts():
+    """Same password should produce different hashes each time (salt)."""
+    h1 = compute_hash("hello", "bcrypt")
+    h2 = compute_hash("hello", "bcrypt")
+    assert h1.success and h2.success
+    assert h1.hash_value != h2.hash_value, "bcrypt should use unique salts"
+    print("[PASS] bcrypt different salts")
+
+
 def test_list_types():
     types = list_hash_types()
     assert "md5" in types
@@ -123,6 +159,10 @@ def run_all():
         test_empty_input,
         test_unsupported_type,
         test_list_types,
+        test_bcrypt_compute,
+        test_bcrypt_verify,
+        test_bcrypt_auto_detect,
+        test_bcrypt_different_salts,
     ]
 
     passed = 0
