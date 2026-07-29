@@ -86,6 +86,8 @@ Examples:
                               help="Disable rule-based mutations")
     crack_parser.add_argument("--workers", type=int, default=0,
                               help="Number of worker processes (default: CPU count)")
+    crack_parser.add_argument("--gpu", action="store_true",
+                              help="Use GPU acceleration (for MD5/SHA-256)")
 
     # --- analyze ---
     analyze_parser = subparsers.add_parser("analyze", help="Analyze password strength")
@@ -119,6 +121,19 @@ Examples:
     hash_parser.add_argument("--rounds", type=int, default=12,
                              help="bcrypt salt rounds (default: 12, range: 4-31)")
 
+    # --- benchmark ---
+    bench_parser = subparsers.add_parser("benchmark", help="Benchmark GPU/CPU hash rate")
+    bench_parser.add_argument("--type", "-t", default="md5", dest="hash_type",
+                              choices=["md5", "sha256"],
+                              help="Hash algorithm to benchmark (default: md5)")
+    bench_parser.add_argument("--words", "-n", type=int, default=50000,
+                              help="Number of test words (default: 50000)")
+    bench_parser.add_argument("--gpu", action="store_true",
+                              help="Force GPU benchmark (falls back to CPU if no GPU)")
+
+    # --- gpu-info ---
+    subparsers.add_parser("gpu-info", help="Show GPU detection and hardware info")
+
     # --- list ---
     subparsers.add_parser("list", help="List supported hash types")
 
@@ -139,6 +154,7 @@ def cmd_crack(args: argparse.Namespace):
     wordlist = args.wordlist
     use_rules = not args.no_rules
     workers = args.workers if args.workers > 0 else None
+    use_gpu = args.gpu
 
     # Validate wordlist
     if not os.path.isfile(wordlist):
@@ -148,14 +164,27 @@ def cmd_crack(args: argparse.Namespace):
     # Show crack header
     print()
     print(c("+================================================+", Colors.MAGENTA))
-    print(c(f"|  HASHFORGE CRACKER                                     |", Colors.MAGENTA))
+    if use_gpu:
+        print(c(f"|  HASHFORGE CRACKER  [GPU ACCELERATED]                      |", Colors.MAGENTA))
+    else:
+        print(c(f"|  HASHFORGE CRACKER                                     |", Colors.MAGENTA))
     print(c("+================================================+", Colors.MAGENTA))
     print()
     print(f"  Target:   {c(hash_value[:48] + ('...' if len(hash_value) > 48 else ''), Colors.YELLOW)}")
     print(f"  Type:     {c(hash_type or 'Unknown', Colors.CYAN)}")
     print(f"  Wordlist: {c(os.path.relpath(wordlist), Colors.DIM)}")
     print(f"  Rules:    {c('Enabled' if use_rules else 'Disabled', Colors.GREEN if use_rules else Colors.RED)}")
-    print(f"  Workers:  {c(str(workers or os.cpu_count()), Colors.BLUE)}")
+
+    if use_gpu:
+        from .gpu_accel import get_gpu_info
+        gpu = get_gpu_info()
+        if gpu.available:
+            print(f"  GPU:      {c(gpu.device_name, Colors.MAGENTA)}")
+            print(f"  VRAM:     {c(f'{gpu.memory_total_gb} GB', Colors.BLUE)}")
+        else:
+            print(f"  GPU:      {c('Not available (falling back to CPU)', Colors.YELLOW)}")
+    else:
+        print(f"  Workers:  {c(str(workers or os.cpu_count()), Colors.BLUE)}")
     print()
 
     if not hash_type:
@@ -176,6 +205,58 @@ def cmd_crack(args: argparse.Namespace):
         sys.exit(1)
 
     # Run crack
+    if use_gpu and hash_type in ("md5", "sha256"):
+        from .gpu_accel import GPUCracker
+        gpu_cracker = GPUCracker(batch_size=10000)
+        if gpu_cracker.available:
+            # Read all words
+            all_words = []
+            with open(wordlist, "r", encoding="utf-8", errors="ignore") as f:
+                all_words = [line.strip() for line in f if line.strip()]
+
+            print(c(f"  GPU Cracking {len(all_words):,} words via {gpu_cracker.device_name}...", Colors.YELLOW))
+
+            from .rules import WordRuleEngine
+            engine = WordRuleEngine(max_mutations=50000) if use_rules else None
+
+            start = time.time()
+            found, password, attempts = gpu_cracker.crack_batch(
+                all_words, hash_value, hash_type, use_rules_engine=engine
+            )
+            elapsed = time.time() - start
+
+            # Build result
+            if found:
+                result_attr = {"found": True, "password": password,
+                               "attempts": attempts, "time_taken": round(elapsed, 2),
+                               "rule_used": "GPU direct match" if password in all_words else "GPU + rules"}
+            else:
+                result_attr = {"found": False, "password": "",
+                               "attempts": attempts, "time_taken": round(elapsed, 2),
+                               "rule_used": ""}
+
+            print()
+            print(c("+------------------------------------------------+", Colors.CYAN))
+            print(c("  RESULTS [GPU]", Colors.BOLD))
+            print(c("+------------------------------------------------+", Colors.CYAN))
+
+            if result_attr["found"]:
+                print(c(f"  [FOUND] PASSWORD FOUND!", Colors.GREEN + Colors.BOLD))
+                print(f"     Password: {c(result_attr['password'], Colors.GREEN + Colors.BOLD)}")
+                print(f"     Method:   {result_attr['rule_used']}")
+            else:
+                print(c(f"  [MISS] Password not found", Colors.RED))
+                print(f"     Try a larger wordlist or enable rules.")
+
+            print(f"  Attempts: {result_attr['attempts']:,}")
+            print(f"  Time:     {result_attr['time_taken']:.2f}s")
+            if result_attr['time_taken'] > 0:
+                rate = result_attr['attempts'] / result_attr['time_taken']
+                print(f"  Rate:     {rate:,.0f} hashes/sec")
+            print()
+            return
+
+    # Fallback to CPU cracker
     cracker = HashCracker(workers=workers)
     print(c("  Cracking...", Colors.YELLOW))
 
@@ -399,6 +480,83 @@ def cmd_list():
 
 
 # ---------------------------------------------------------------------------
+# GPU Commands
+# ---------------------------------------------------------------------------
+
+def cmd_benchmark(args: argparse.Namespace):
+    """Benchmark GPU/CPU hash cracking speed."""
+    from .gpu_accel import GPUCracker, gpu_benchmark
+
+    print()
+    print(c("+================================================+", Colors.MAGENTA))
+    print(c("|  HASHFORGE BENCHMARK                                    |", Colors.MAGENTA))
+    print(c("+================================================+", Colors.MAGENTA))
+    print()
+
+    if args.gpu:
+        cracker = GPUCracker(batch_size=args.words)
+        if not cracker.available:
+            print(c("  [WARNING] No GPU detected. Running CPU benchmark instead.", Colors.YELLOW))
+        print(f"  Device:    {cracker.device_name}")
+    else:
+        print(f"  Device:    CPU ({os.cpu_count()} cores)")
+
+    print(f"  Algorithm: {c(args.hash_type.upper(), Colors.CYAN)}")
+    print(f"  Words:     {c(f'{args.words:,}', Colors.BOLD)}")
+    print()
+
+    print(c("  Running benchmark...", Colors.YELLOW))
+
+    result = gpu_benchmark(hash_type=args.hash_type, num_words=args.words)
+
+    print(c("  Done!\n", Colors.GREEN))
+
+    print(f"  {c('Results:', Colors.BOLD)}")
+    print(f"  {'Time:':16s} {result['time_seconds']:.3f}s")
+    print(f"  {'Hash Rate:':16s} {c(result['rate_human'], Colors.GREEN + Colors.BOLD)}")
+    print(f"  {'Device:':16s} {result['device']}")
+    print(f"  {'GPU Mode:':16s} {'Yes' if result['gpu_accelerated'] else 'No'}")
+    print()
+
+
+def cmd_gpu_info():
+    """Show GPU detection and hardware information."""
+    from .gpu_accel import get_gpu_info
+
+    print()
+    print(c("+================================================+", Colors.CYAN))
+    print(c("|  GPU DETECTION                                         |", Colors.CYAN))
+    print(c("+================================================+", Colors.CYAN))
+    print()
+
+    gpu = get_gpu_info()
+
+    if gpu.available:
+        print(f"  {c('Status:', Colors.GREEN + Colors.BOLD):20s} {c('AVAILABLE', Colors.GREEN)}")
+        print(f"  {'Device:':20s} {gpu.device_name}")
+        print(f"  {'CUDA Version:':20s} {gpu.cuda_version}")
+        print(f"  {'Compute Capability:':20s} {gpu.compute_capability}")
+        print(f"  {'VRAM:':20s} {gpu.memory_total_gb} GB")
+        print(f"  {'Multi-Processors:':20s} {gpu.multi_processor_count}")
+
+        from .gpu_accel import GPUCracker
+        gpu_cracker = GPUCracker()
+        print(f"  {'GPU Cracking:':20s} {c('Ready', Colors.GREEN)}")
+        print(f"  {'Supported:':20s} MD5 (SHA-256 uses CPU fallback)")
+    else:
+        print(f"  {c('Status:', Colors.RED + Colors.BOLD):20s} {c('NOT AVAILABLE', Colors.RED)}")
+        if gpu.error:
+            print(f"  {'Reason:':20s} {gpu.error}")
+        print()
+        print(c("  GPU acceleration requires:", Colors.YELLOW))
+        print(f"    {c('1.', Colors.BOLD)} NVIDIA GPU with CUDA Compute 3.5+")
+        print(f"    {c('2.', Colors.BOLD)} pip install numba")
+        print(f"    {c('3.', Colors.BOLD)} NVIDIA CUDA Toolkit 11.x+")
+
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
 
@@ -416,6 +574,10 @@ def run_command(args: argparse.Namespace):
         cmd_hash(args)
     elif args.command == "list":
         cmd_list()
+    elif args.command == "benchmark":
+        cmd_benchmark(args)
+    elif args.command == "gpu-info":
+        cmd_gpu_info()
     else:
         print(c("[!] No command specified. Use --help for usage.", Colors.YELLOW))
         sys.exit(1)

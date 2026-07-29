@@ -1,2 +1,3 @@
 # HashForge dependencies
 bcrypt>=4.0.0
+numba>=0.59.0  # CUDA GPU acceleration (optional, falls back to CPU if unavailable)

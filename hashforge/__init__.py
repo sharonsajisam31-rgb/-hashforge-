@@ -37,6 +37,14 @@ from .analyzer import (
     PasswordReport,
 )
 
+from .gpu_accel import (
+    GPUCracker,
+    get_gpu_info,
+    gpu_benchmark,
+    get_cracker,
+    GPUInfo,
+)
+
 __all__ = [
     "compute_hash",
     "verify_hash",
@@ -51,4 +59,9 @@ __all__ = [
     "WordRuleEngine",
     "analyze_password",
     "PasswordReport",
+    "GPUCracker",
+    "get_gpu_info",
+    "gpu_benchmark",
+    "get_cracker",
+    "GPUInfo",
 ]
